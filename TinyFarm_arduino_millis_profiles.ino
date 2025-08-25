@@ -158,9 +158,9 @@ unsigned Lux; // add code - Lee
 #include <ArduinoJson.h>
 
 WiFiEspClient client;
-HttpClient http(client, "172.19.18.33", 3000);
+HttpClient http(client, "203.250.148.89", 3000);
 
-String server = "172.19.18.33";
+String server = "203.250.148.89";
 int port = 3000;
 
 char ssid[] = "sejong-guest";   // your network SSID (name) 와이파이 이름을 우선 세종대학교 공용 와이파이로 함
