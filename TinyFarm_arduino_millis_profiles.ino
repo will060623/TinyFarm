@@ -1,84 +1,6 @@
-//20250725 아두이노 업로드 할 코드
-//이산화탄소코드 포함
 #include <Servo.h>
 #include "DHT.h"
 
-// ======== [ADDED] Profile-based configuration ========
-struct DeviceProfile {
-  const char* name;
-  uint32_t humPeriodMs;
-  uint32_t tempPeriodMs;
-  uint32_t soilPeriodMs;
-  uint32_t co2PeriodMs;
-  uint32_t cmdPeriodMs;
-  const char* basePath;     // e.g. "/TinyIoT/TinyFarm"
-  const char* origin;       // X-M2M-Origin
-  const char* server;       // optional override
-  int        port;          // optional override
-};
-
-DeviceProfile PROFILES[] = {
-  { "device1", 10000, 10000, 30000, 60000, 5000, "/TinyIoT/TinyFarm", "SArduino1", nullptr, -1 },
-  { "device2",  5000,  5000, 15000, 30000, 5000, "/TinyIoT/TinyFarm", "SArduino2", nullptr, -1 },
-};
-constexpr size_t PROFILE_COUNT = sizeof(PROFILES)/sizeof(PROFILES[0]);
-#define DEFAULT_PROFILE "device1"
-
-const DeviceProfile* ACTIVE = nullptr;
-
-uint32_t HUM_POST_MS;
-uint32_t TEMP_POST_MS;
-uint32_t SOIL_POST_MS;
-uint32_t CO2_POST_MS;
-uint32_t CMD_POLL_MS;
-
-const DeviceProfile* findProfile(const char* name) {
-  for (size_t i=0;i<PROFILE_COUNT;++i) if (strcmp(PROFILES[i].name, name)==0) return &PROFILES[i];
-  return nullptr;
-}
-
-void applyActiveProfile(const DeviceProfile* p) {
-  ACTIVE = p;
-  HUM_POST_MS  = p->humPeriodMs;
-  TEMP_POST_MS = p->tempPeriodMs;
-  SOIL_POST_MS = p->soilPeriodMs;
-  CO2_POST_MS  = p->co2PeriodMs;
-  CMD_POLL_MS  = p->cmdPeriodMs;
-  Serial.print(F("[PROFILE] ")); Serial.print(p->name);
-  Serial.print(F(" basePath=")); Serial.print(p->basePath);
-  Serial.print(F(" origin=")); Serial.println(p->origin);
-}
-
-String applyBasePath(const char* path) {
-  String s(path);
-  const char* oldBase = "/TinyIoT/TinyFarm";
-  if (ACTIVE && s.startsWith(oldBase)) {
-    String rest = s.substring(strlen(oldBase));
-    return String(ACTIVE->basePath) + rest;
-  }
-  return s;
-}
-
-void handleSerialCommand() {
-  if (!Serial.available()) return;
-  String line = Serial.readStringUntil('\\n'); line.trim();
-  if (line.startsWith("profile ")) {
-    String name = line.substring(8); name.trim();
-    auto p = findProfile(name.c_str());
-    if (p) { applyActiveProfile(p); Serial.println(F("[CMD] profile switched")); }
-    else   { Serial.println(F("[CMD] unknown profile")); }
-  } else if (line == "show") {
-    if (ACTIVE) {
-      Serial.print(F("[INFO] active=")); Serial.print(ACTIVE->name);
-      Serial.print(F(", hum=")); Serial.print(HUM_POST_MS);
-      Serial.print(F(", temp=")); Serial.print(TEMP_POST_MS);
-      Serial.print(F(", basePath=")); Serial.println(ACTIVE->basePath);
-    } else {
-      Serial.println(F("[INFO] no active profile"));
-    }
-  }
-}
-// ======== [END ADDED] Profile-based configuration ========
 #define DHTPIN 12
 #define DHTTYPE DHT11
 #define SERVOPIN 9
@@ -123,32 +45,15 @@ int status_sensor = 0;
 RX9QR RX9(cal_A, cal_B, Base_line, meti, mein, 700, 1000, 2000, 4000);
 
 
-// 마지막 전송 시각
-unsigned long lastHumPost  = 0;
-unsigned long lastTempPost = 0;
-unsigned long lastSoilPost = 0;
-unsigned long lastCO2Post  = 0;
-
-// TinyIoT 원격명령 주기
-unsigned long lastCmdPoll = 0;
-
 float temperature, humidity;
 int angle = 0;
 int RBG_R = 35; 
 int RBG_G = 35; 
 int RBG_B = 36;
-int cdcValue = 0;
 int waterValue = 0;
 int lightoutput = 0;
-int fanOutput = 0;
-int waterPumpPin = 0;
-int timeout = 11; 
 char sData[64] = { 0x00, };
-char rData[32] = { 0x00, };
 char nData[32] = { 0x00, };
-int rPos = 0;
-int nPos = 0;
-int right = 10;
 int resource_sum = 0;
 
 unsigned Lux; // add code - Lee  
@@ -296,60 +201,116 @@ int post(String path, String contentType, String name, String content){
 String getCommandFromTinyIoT(String path) {
   String payload = "";
 
-  if (client.connect(server.c_str(), port)) {
-    // 요청 전송
-    String request = "GET " + path + " HTTP/1.1\r\n";
-    request += "Host: " + server + ":" + port + "\r\n";
-    request += "X-M2M-RI: retrieve\r\n";
-    request += "X-M2M-Rvi: 2a\r\n";
-    request += "X-M2M-Origin: CAdmin\r\n";
-    request += "Accept: application/json\r\n";
-    request += "Connection: close\r\n\r\n";
-    client.print(request);
-
-    // 응답 읽기
-    bool inBody = false;
-    unsigned long timeout = millis();
-
-    while (millis() - timeout < 3000) { // 최대 3초 대기
-      while (client.available()) {
-        String line = client.readStringUntil('\n');
-        line.trim();  // \r, 공백 제거
-
-        // --- 디버깅 ---
-        Serial.print("LINE: [");
-        Serial.print(line);
-        Serial.println("]");
-
-        if (!inBody) {
-          // 빈 줄("") 또는 "\r" → 헤더 끝
-          if (line.length() == 0) {
-            inBody = true;
-          }
-        } else {
-          payload += line;
-        }
-        timeout = millis(); // 데이터 들어오면 타이머 리셋
-      }
-    }
-    client.stop();
-  } else {
+  if (!client.connect(server.c_str(), port)) {
     Serial.println("TinyIoT 연결 실패");
     return "";
   }
 
-  // --- RAW 출력 ---
-  Serial.println("=== RAW PAYLOAD START ===");
-  Serial.println(payload);
-  Serial.println("=== RAW PAYLOAD END ===");
+  // 요청 전송
+  String req = "GET " + path + " HTTP/1.1\r\n";
+  req += "Host: " + server + ":" + port + "\r\n";
+  req += "X-M2M-RI: retrieve_cin\r\n";
+  req += "X-M2M-Rvi: 2a\r\n";
+  req += "X-M2M-Origin: CAdmin\r\n";
+  req += "Accept: application/json\r\n";
+  req += "Connection: close\r\n\r\n";
+  client.print(req);
 
-  // JSON 파싱
-  StaticJsonDocument<512> doc;
-  DeserializationError error = deserializeJson(doc, payload);
+  // 1) 헤더를 바이트 단위로 읽으며 \r\n\r\n 탐지
+  String headers; headers.reserve(512);
+  int match = 0;             // CRLFCRLF 매칭 진행도
+  unsigned long t0 = millis();
+  const unsigned long HDR_TIMEOUT = 5000;
 
-  if (error) {
+  while (millis() - t0 < HDR_TIMEOUT && match < 4) {
+    if (client.available()) {
+      char c = client.read();
+      headers += c;
+      t0 = millis();
+
+      // CRLFCRLF 탐지
+      if ((match == 0 && c == '\r') ||
+          (match == 1 && c == '\n') ||
+          (match == 2 && c == '\r') ||
+          (match == 3 && c == '\n')) {
+        match++;
+      } else {
+        match = (c == '\r') ? 1 : 0; // 부분 일치 리셋
+      }
+    }
+  }
+
+  if (match < 4) {
+    Serial.println("헤더 읽기 실패(경계 미검출)");
+    client.stop();
+    return "";
+  }
+
+  // 2) Content-Length 추출
+  int contentLength = -1;
+  {
+    int idx = headers.indexOf("Content-Length:");
+    if (idx < 0) idx = headers.indexOf("Content-length:");
+    if (idx >= 0) {
+      int eol = headers.indexOf("\r\n", idx);
+      String len = headers.substring(idx + 15, eol);
+      len.trim();
+      contentLength = len.toInt();
+    }
+  }
+
+  // (선택) 상태코드 확인
+  int status = -1;
+  {
+    int s = headers.indexOf("HTTP/1.1 ");
+    if (s >= 0 && s + 12 <= (int)headers.length()) {
+      status = headers.substring(s + 9, s + 12).toInt();
+    }
+  }
+
+  // 3) 본문 N바이트 정확히 읽기 (N 미상일 땐 close까지)
+  String body;
+  if (contentLength > 0) body.reserve(contentLength + 8);
+  t0 = millis();
+  const unsigned long BODY_TIMEOUT = 5000;
+
+  if (contentLength >= 0) {
+    while ((int)body.length() < contentLength && millis() - t0 < BODY_TIMEOUT) {
+      if (client.available()) {
+        char c = client.read();
+        body += c;
+        t0 = millis();
+      }
+    }
+  } else {
+    // Content-Length 없을 때: 연결 종료까지
+    while ((client.connected() || client.available()) && millis() - t0 < BODY_TIMEOUT) {
+      if (client.available()) {
+        char c = client.read();
+        body += c;
+        t0 = millis();
+      }
+    }
+  }
+
+  client.stop();
+
+  // Content-Length 지정됐으면 초과분 제거
+  if (contentLength >= 0 && (int)body.length() > contentLength) {
+    body = body.substring(0, contentLength);
+  }
+
+  // 디버그 (필요 시만)
+  // Serial.println("=== RAW PAYLOAD START ===");
+  // Serial.println(body);
+  // Serial.println("=== RAW PAYLOAD END ===");
+
+  // 4) JSON 파싱
+  StaticJsonDocument<512> doc;   // 필요시 768~1024로
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
     Serial.print("JSON 파싱 실패: ");
-    Serial.println(error.f_str());
+    Serial.println(err.f_str());
     return "";
   }
 
@@ -360,12 +321,6 @@ String getCommandFromTinyIoT(String path) {
   Serial.println("con 필드 없음");
   return "";
 }
-
-
-
-
-
-
 
 // json 데이터 body를 생성하는 함수
 String serializeJsonBody(String contentType, String name, String content){
@@ -422,7 +377,7 @@ void setDevice(){
   int fflag = 0;
 
   /* Check Arduino AE exists in TinyIoT if not create Arduino AE, CNT */
-  int status = get(applyBasePath("/TinyIoT/TinyFarm"));
+  int status = get("/TinyIoT/TinyFarm");
   if(status == 1) {
     Serial.println(F("Successfully retrieved!"));
     resource_sum = RESOURCE_CREATED_SUM;
@@ -435,12 +390,12 @@ void setDevice(){
       Serial.println(F("Successfully created AE_TinyFarm"));
       resource_sum ++;
 
-      int state_CNT1 = post(applyBasePath("/TinyIoT/TinyFarm"), "CNT", "Sensors", "");
+      int state_CNT1 = post("/TinyIoT/TinyFarm", "CNT", "Sensors", "");
       if(state_CNT1 == 1){
         Serial.println(F("Successfully created CNT_Sensors!"));
         resource_sum ++;
 
-        fflag = post(applyBasePath("/TinyIoT/TinyFarm/Sensors"), "CNT", "Temperature", ""); 
+        fflag = post("/TinyIoT/TinyFarm/Sensors", "CNT", "Temperature", ""); 
         if (fflag == 1){
           Serial.println(F("Successfully created CNT_Temperature!"));
           resource_sum ++;
@@ -451,19 +406,19 @@ void setDevice(){
           fflag = 0;
         }
 
-        fflag = post(applyBasePath("/TinyIoT/TinyFarm/Sensors"), "CNT", "humidity", "");
+        fflag = post("/TinyIoT/TinyFarm/Sensors", "CNT", "Humidity", "");
         if (fflag == 1){
-          Serial.println(F("Successfully created CNT_humidity!"));
+          Serial.println(F("Successfully created CNT_Humidity!"));
           resource_sum ++;
           fflag = 0;
         }
         else{
-          Serial.println(F("Failed to create CNT_humidity!"));
+          Serial.println(F("Failed to create CNT_Humidity!"));
           fflag = 0;
         }
        
 
-        fflag = post(applyBasePath("/TinyIoT/TinyFarm/Sensors"), "CNT", "CO2", "");
+        fflag = post("/TinyIoT/TinyFarm/Sensors", "CNT", "CO2", "");
         if (fflag == 1){
           Serial.println(F("Successfully created CNT_CO2!"));
           resource_sum ++;
@@ -490,7 +445,7 @@ void setDevice(){
          Serial.println(F("Failed to create CNT_Sensors!"));
       }
 
-      int state_CNT2 = post(applyBasePath("/TinyIoT/TinyFarm"), "CNT", "Actuators", "");
+      int state_CNT2 = post("/TinyIoT/TinyFarm", "CNT", "Actuators", "");
       if(state_CNT2 == 1){
         Serial.println(F("Successfully created CNT_Actuators!"));
         resource_sum ++;
@@ -528,7 +483,7 @@ void setDevice(){
           fflag = 0;
         }
 
-        fflag = post(applyBasePath("/TinyIoT/TinyFarm/Actuators"), "CNT", "Water", "");
+        fflag = post("/TinyIoT/TinyFarm/Actuators", "CNT", "Water", "");
         if (fflag == 1){
           Serial.println(F("Successfully created CNT_Water!"));
           resource_sum ++;
@@ -574,7 +529,8 @@ void printLCD(int col, int row , char *str) {
     for(int i=0 ; i < strlen(str) ; i++){
       lcd.setCursor(col+i , row);
       lcd.print(str[i]);
-    }}
+    }
+  }
 
 
 // 와이파이 환경 연결함수
@@ -605,12 +561,6 @@ void printWifiStatus(){
 // 초기 1회 setup 함수
 // 시리얼 포트로 연결 시 최초 1회만 실행됨됨
 void setup() {
-// [ADDED] initialize active profile
-{
-  const DeviceProfile* p = findProfile(DEFAULT_PROFILE);
-  if (p) applyActiveProfile(p);
-  else applyActiveProfile(&PROFILES[0]);
-}
 
   pinMode(LIGHTPIN, OUTPUT);
   pinMode(FAN_PIN, OUTPUT);
@@ -675,9 +625,10 @@ void setup() {
   post("/TinyIoT/TinyFarm/Actuators/Door", "CIN", "", "OFF");
   post("/TinyIoT/TinyFarm/Actuators/Fan", "CIN", "", "OFF");
   post("/TinyIoT/TinyFarm/Actuators/LED", "CIN", "", "0");
-  //post("/TinyIoT/TinyFarm/Actuators/Water", "CNT", "Door", "");
+  post("/TinyIoT/TinyFarm/Actuators/Water", "CNT", "", "OFF");
+
   if(resource_sum == RESOURCE_CREATED_SUM) {
-    Serial.println("SmartFarm Succesfully Registered");
+    Serial.println("SmartFarm Succesfully Registered");  
   }
   else{
     Serial.println("Failed to register SmartFarm");
@@ -685,71 +636,45 @@ void setup() {
 }
 
 void loop() {
-  handleSerialCommand(); // [ADDED] runtime profile switch
-
-  unsigned long now = millis();
-
   int tem;
   int hum;
   int co;
 
-  // ====== DHT (습도/온도): 한 번만 읽어서 두 항목에 공유 ======
-  bool needHum  = (now - lastHumPost  >= HUM_POST_MS);
-  bool needTemp = (now - lastTempPost >= TEMP_POST_MS);
+    
+  float h = dht.readHumidity();        // 보통 readHumidity()
+  float t = dht.readTemperature();     // ℃
+  tem = (int)t;
+  hum = (int)h;
+  
+  String sH = String(h);
+  post("/TinyIoT/TinyFarm/Sensors/Humidity", "CIN", "", sH);
 
-  if (needHum || needTemp) {
-    float h = dht.readHumidity();        // 보통 readHumidity()
-    float t = dht.readTemperature();     // ℃
-    tem = (int)t;
-    hum = (int)h;
+  String sT = String(t);
+  post("/TinyIoT/TinyFarm/Sensors/Temperature", "CIN", "", sT);
+    
+  int waterValue = analogRead(1);
+  waterValue = (10230 - waterValue * 10) / 100;
+  char wat_buffer[16] = {0};
+  itoa(waterValue, wat_buffer, 10);
+  post("/TinyIoT/TinyFarm/Sensors/Soil", "CIN", "", wat_buffer);
 
+  float EMF  = analogRead(EMF_pin);
+  delay(1);
+  EMF = EMF / (ADCResol - 1) * ADCvolt / 6 * 1000;
 
-    if (needHum && !isnan(h)) {
-      String sH = String(h);
-      post(applyBasePath("/TinyIoT/TinyFarm/Sensors/humidity"), "CIN", "", sH);
-      lastHumPost = now;
-    }
-    if (needTemp && !isnan(t)) {
-      String sT = String(t);
-      post(applyBasePath("/TinyIoT/TinyFarm/Sensors/Temperature"), "CIN", "", sT);
-      lastTempPost = now;
-    }
-  }
+  float THER = analogRead(THER_pin);
+  delay(1);
+  THER = 1 / (C1 + C2 * log((Resist_0 * THER)/(ADCResol - THER)) + C3 * pow(log((Resist_0 * THER)/(ADCResol - THER)), 3)) - 273.15;
 
-  // ====== 토양수분 ======
-  if (now - lastSoilPost >= SOIL_POST_MS) {
-    int waterValue = analogRead(1);
-    waterValue = (10230 - waterValue * 10) / 100;
-    char wat_buffer[16] = {0};
-    itoa(waterValue, wat_buffer, 10);
-    post(applyBasePath("/TinyIoT/TinyFarm/Sensors/Soil"), "CIN", "", wat_buffer);
-    lastSoilPost = now;
-  }
+  int co2_ppm = RX9.cal_co2(EMF, THER) / 10;
+  co = co2_ppm;
+  char co2_buffer[16] = {0};
+  itoa(co2_ppm, co2_buffer, 10);
+  post("/TinyIoT/TinyFarm/Sensors/CO2", "CIN", "", co2_buffer);
 
-  // ====== CO2 ======
-  if (now - lastCO2Post >= CO2_POST_MS) {
-    float EMF  = analogRead(EMF_pin);
-    delay(1);
-    EMF = EMF / (ADCResol - 1) * ADCvolt / 6 * 1000;
+  
 
-    float THER = analogRead(THER_pin);
-    delay(1);
-    THER = 1 / (C1 + C2 * log((Resist_0 * THER)/(ADCResol - THER))
-                   + C3 * pow(log((Resist_0 * THER)/(ADCResol - THER)), 3)) - 273.15;
-
-    int co2_ppm = RX9.cal_co2(EMF, THER) / 10;
-    int co = co2_ppm;
-    char co2_buffer[16] = {0};
-    itoa(co2_ppm, co2_buffer, 10);
-    post(applyBasePath("/TinyIoT/TinyFarm/Sensors/CO2"), "CIN", "", co2_buffer);
-
-    lastCO2Post = now;
-  }
-
-  if (now - lastCmdPoll >= CMD_POLL_MS) {
-    // 네트워크로부터 들어온 명령을 처리 (창문, led, 환풍기, 물펌프)
-      //ON / OFF 함수는 모두 대문자로 입력되어야 함
-    String cmd1 = getCommandFromTinyIoT("/TinyIoT/TinyFarm/Actuators/Door/la"); // 창문 명령을 처리하는 함수
+  String cmd1 = getCommandFromTinyIoT("/TinyIoT/TinyFarm/Actuators/Door/la"); 
 
     if (cmd1.length() > 0) {
 
@@ -774,7 +699,7 @@ void loop() {
 
     }
 
-
+    
     String cmd2 = getCommandFromTinyIoT("/TinyIoT/TinyFarm/Actuators/Fan/la"); // 환풍기 명령을 처리하는 함수
     Serial.println(cmd2);
     if (cmd2.length() > 0){
@@ -813,61 +738,43 @@ void loop() {
       
     }
 
-  // 자동급수 명령은 물높이와 물펌프 세팅을 정확히 하고난 다음에 활성화하기
-    // String cmd4 = getCommandFromTinyIoT("/TinyIoT/TinyFarm/Actuators/Water/la"); // 자동급수 명령을 처리하는 함수
 
-      
-    // if (cmd4.length() > 0){ 
+     String cmd4 = getCommandFromTinyIoT("/TinyIoT/TinyFarm/Actuators/Water/la"); // 자동급수 명령을 처리하는 함수
+     if (cmd4.length() > 0){ 
 
-    //   const char* nData = cmd4.c_str();
+       const char* nData = cmd4.c_str();
 
-    //   if(memcmp(nData, "ON", 2) == 0) {
-    //     digitalWrite(WATER_PUMP_PIN, (nData[0] == 'O' && nData[1] == 'N') ? HIGH : LOW);
-    //     Serial.print("[펌프 제어] WATER=");
-    //     Serial.println((nData[0] == 'O' && nData[1] == 'N') ? 1 : 0);
-    //   }
+       if(memcmp(nData, "ON", 2) == 0) {
+         digitalWrite(WATER_PUMP_PIN, (nData[0] == 'O' && nData[1] == 'N') ? HIGH : LOW);
+         Serial.print("[펌프 제어] WATER=");
+         Serial.println((nData[0] == 'O' && nData[1] == 'N') ? 1 : 0);
+       }
 
-    //   if(memcmp(nData, "OFF", 3) == 0) {
-    //     digitalWrite(WATER_PUMP_PIN, (nData[0] == 'O' && nData[1] == 'N') ? HIGH : LOW);
-    //     Serial.print("[펌프 제어] WATER=");
-    //     Serial.println((nData[0] == 'O' && nData[1] == 'N') ? 1 : 0);
-    //   }
+       if(memcmp(nData, "OFF", 3) == 0) {
+         digitalWrite(WATER_PUMP_PIN, (nData[0] == 'O' && nData[1] == 'N') ? HIGH : LOW);
+         Serial.print("[펌프 제어] WATER=");
+         Serial.println((nData[0] == 'O' && nData[1] == 'N') ? 1 : 0);
+       }
 
-    // }
-    lastCmdPoll = now;
-  }
-
-
+     }
 
       //센서값 LCD 출력
 
 
       lcd.clear();
-      displayToggle = !displayToggle;
-      if(displayToggle == 1) {
         memset(sData, 0x00, 64);
         sprintf(sData, "temp %02dC humi %02d%%", tem,
         hum);
         printLCD(0, 0, sData);
         memset(sData, 0x00, 64);
-        sprintf(sData, "co2%-04d soil%-04d", co, waterValue);
+        sprintf(sData, "co2 %-04d soil %-04d", co, waterValue);
         printLCD(0, 1, sData);
-      }
-      else {
-        memset(sData, 0x00, 64);
-        sprintf(sData, "temp %02dC humi %02d%%", tem, 
-        hum);
-        printLCD(0, 0, sData);
-        memset(sData, 0x00, 64);
-        printLCD(0, 1, sData);
-      }
 
-      sprintf(sData, "{ \"temp\":%02d,\"humidity\":%02d,\"co2\":%-04d,\"water\":%-04d }", 
-      tem, hum, co, waterValue);
+      sprintf(sData, "{ \"temp\":%02d,\"Humidity\":%02d,\"co2\":%-04d,\"water\":%-04d }", tem, hum, co, waterValue);
     
-  
       Serial1.println(sData);
-  // 여기는 더 이상 delay(10000) 사용하지 않습니다.
-  // (ESP 계열이면) watchdog/스케줄링을 위해 살짝 양보
-  delay(1); // 또는 yield();
-}
+  
+  
+    delay(1); // 또는 yield();
+
+    }
