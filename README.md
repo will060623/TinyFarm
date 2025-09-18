@@ -6,11 +6,11 @@
 
 <img src="https://github.com/will060623/TinyFarm/blob/main/images/TinyFarm.png?raw=true"/>
 
- ### **TinyFarm** is real-time remote controllable Smartfarm using Arduino and **TinyIoT**.
+ **TinyFarm** is real-time remote controllable Smartfarm using Arduino and **TinyIoT**.
 
- ### **TinyFarm** monitors sensor values in real time and sends them to **TinyIoT**.
+ **TinyFarm** monitors sensor values in real time and sends them to **TinyIoT**.
 
- ### The user can control the actuator of the TinyFarm remotely.
+ The user can control the actuator of the TinyFarm remotely.
 <br> 
 
 
