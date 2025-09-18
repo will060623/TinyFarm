@@ -22,7 +22,7 @@ https://github.com/seslabSJU/tinyIoT.git
 ```
 
 
-## Consist of TinyFarm_Arduino
+## File Structure of TinyFarm_Arduino
 
 📂 TinyFarm_arduino
    <br>&nbsp;&nbsp;&nbsp;&nbsp;|- &nbsp;TinyFarm_arduino.ino          main code for arduino
