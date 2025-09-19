@@ -63,13 +63,13 @@ unsigned Lux; // add code - Lee
 #include <ArduinoJson.h>
 
 WiFiEspClient client;
-HttpClient http(client, "203.250.148.89", 3000);
+HttpClient http(client, "127.0.0.1", 3000);
 
-String server = "203.250.148.89";
+String server = "127.0.0.1";
 int port = 3000;
 
-char ssid[] = "sejong-guest";   // your network SSID (name) 와이파이 이름을 우선 세종대학교 공용 와이파이로 함
-char pass[] = "0234083114";  // your network password 비밀번호 입력
+char ssid[] = "wifiname";   // your network SSID (name) 와이파이 이름을 우선 세종대학교 공용 와이파이로 함
+char pass[] = "password";  // your network password 비밀번호 입력
 //0234083114
 
 int status = WL_IDLE_STATUS;  // the Wifi radio's status
