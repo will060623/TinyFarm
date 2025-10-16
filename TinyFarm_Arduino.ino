@@ -1,85 +1,39 @@
-#include <Servo.h>
-#include "DHT.h"
-
-#define DHTPIN 12
-#define DHTTYPE DHT11
-#define SERVOPIN 9
-#define LIGHTPIN 4
-#define FAN_PIN 32
-#define WATER_PUMP_PIN 31
-#include <Wire.h>
-#include "LiquidCrystal_I2C.h"
-#define USE_NETWORK 1
-#define USE_BLUETOOTH 1
-#define DEBUG 1
-#define RESOURCE_CREATED_SUM 8
-
-extern void RX9QR_loop();
-extern unsigned int co2_ppm = 0;
-
-#include "RX9QR.h"
-#define EMF_pin A2   // RX-9 E with A0 of arduino
-#define THER_pin A3  // RX-9 T with A1 of arduino
-#define ADCvolt 5
-#define ADCResol 1024
-#define Base_line 432
-#define meti 60  
-#define mein 120 //Automotive: 120, Home or indoor: 1440
-
-//CO2 calibrated number
-float cal_A = 383.3; // you can take the data from RX-9 bottom side QR data #### of first 4 digits. you type the data to cal_A as ###.#
-float cal_B = 62.76; // following 4 digits after cal_A is cal_B, type the data to cal_B as ##.##
-
-// Thermister constant
-// RX-9 have thermistor inside of sensor package. this thermistor check the temperature of sensor to compensate the data
-// don't edit the number
-#define C1 0.00230088
-#define C2 0.000224
-#define C3 0.00000002113323296
-float Resist_0 = 15;
-
-float EMF = 0;
-float THER = 0;
-int status_sensor = 0;
-
-RX9QR RX9(cal_A, cal_B, Base_line, meti, mein, 700, 1000, 2000, 4000);
-
-
-float temperature, humidity;
-int angle = 0;
-int RBG_R = 35; 
-int RBG_G = 35; 
-int RBG_B = 36;
-int waterValue = 0;
-int lightoutput = 0;
-char sData[64] = { 0x00, };
-char nData[32] = { 0x00, };
-int resource_sum = 0;
-
-unsigned Lux; // add code - Lee  
-
-#include <WiFiEsp.h> 
+#include <SoftwareSerial.h>
+#include <WiFi.h>
 #include <ArduinoHttpClient.h>
 #include <ArduinoJson.h>
 
-WiFiEspClient client;
-HttpClient http(client, "127.0.0.1", 3000);
 
-String server = "127.0.0.1";
+SoftwareSerial Mega2560(16,17);   //Mega와 통신하는 핀
+
+
+int Humidity = 0;
+int Temperature = 0;
+int CO2 = 0;
+int Soil = 0;
+
+
+
+TaskHandle_t Task1;     //task 설정
+TaskHandle_t Task2;
+TaskHandle_t Task3;
+TaskHandle_t Task4;
+TaskHandle_t Task5;
+TaskHandle_t Task6;
+TaskHandle_t Task7;
+TaskHandle_t Task8;
+
+
+String server = "203.250.148.89";
 int port = 3000;
 
-char ssid[] = "wifiname";   // your network SSID (name) 와이파이 이름을 우선 세종대학교 공용 와이파이로 함
-char pass[] = "password";  // your network password 비밀번호 입력
-//0234083114
+WiFiClient client;
+HttpClient http(client, server , port);
 
-int status = WL_IDLE_STATUS;  // the Wifi radio's status
-WiFiEspServer server_f(400);
-//========================================================
+const char* ssid = "sejong-guest";
+const char* password = "0234083114";
 
-bool displayToggle = false;
-
-// TinyIoT로 get요청하는 함수
-// 파싱하고 헤더 포함해서 요청 보내기
+//-------------------------Comunication function--------------------------
 int get(String path) { 
 
   // HTTP Request Header
@@ -128,7 +82,6 @@ int get(String path) {
     return -1;
   }
 }
-
 
 //TinyIoT로 post요청하는 함수
 // 파싱하고 헤더 포함해서 요청 보내기
@@ -197,9 +150,11 @@ int post(String path, String contentType, String name, String content){
   }
 }
 
+
 // TinyIoT에서 get요청하여 필요한 contentInstance를 파싱하는 함수
 String getCommandFromTinyIoT(String path) {
   String payload = "";
+  WiFiClient client;
 
   if (!client.connect(server.c_str(), port)) {
     Serial.println("TinyIoT 연결 실패");
@@ -353,10 +308,7 @@ String serializeJsonBody(String contentType, String name, String content){
   return body;
 }
 
-
-
 // 정수를 문자열로 바꾸어 반환하는 함수
-/* Convert unsigned int to String */
 String unsignedToString(unsigned int value) {
     String result;
     do {
@@ -365,416 +317,155 @@ String unsignedToString(unsigned int value) {
     } while (value > 0);
     return result;
 }
+//-------------------------Comunication function--------------------------
 
 
 
-
-// 처음 아두이노 실행 시 리소스트리를 생성하는 함수 (1차 리소스트리 반영 테스트용)
-// 나머지는 리소스트리 스크립트로 수동 생성하기
-void setDevice(){
-  Serial.println(F("Setup Started!"));
-  //startMelody();
-  int fflag = 0;
-
-  /* Check Arduino AE exists in TinyIoT if not create Arduino AE, CNT */
-  int status = get("/TinyIoT/TinyFarm");
-  if(status == 1) {
-    Serial.println(F("Successfully retrieved!"));
-    resource_sum = RESOURCE_CREATED_SUM;
-  } 
-  else if(status == 0){
-    Serial.println(F("Not Found... Creating AE"));
-
-    int state = post("/TinyIoT","AE","TinyFarm","");
-    if(state == 1){
-      Serial.println(F("Successfully created AE_TinyFarm"));
-      resource_sum ++;
-
-      int state_CNT1 = post("/TinyIoT/TinyFarm", "CNT", "Sensors", "");
-      if(state_CNT1 == 1){
-        Serial.println(F("Successfully created CNT_Sensors!"));
-        resource_sum ++;
-
-        fflag = post("/TinyIoT/TinyFarm/Sensors", "CNT", "Temperature", ""); 
-        if (fflag == 1){
-          Serial.println(F("Successfully created CNT_Temperature!"));
-          resource_sum ++;
-          fflag = 0;
-        }
-        else{
-          Serial.println(F("Failed to create CNT_Temperature!"));
-          fflag = 0;
-        }
-
-        fflag = post("/TinyIoT/TinyFarm/Sensors", "CNT", "Humidity", "");
-        if (fflag == 1){
-          Serial.println(F("Successfully created CNT_Humidity!"));
-          resource_sum ++;
-          fflag = 0;
-        }
-        else{
-          Serial.println(F("Failed to create CNT_Humidity!"));
-          fflag = 0;
-        }
-       
-
-        fflag = post("/TinyIoT/TinyFarm/Sensors", "CNT", "CO2", "");
-        if (fflag == 1){
-          Serial.println(F("Successfully created CNT_CO2!"));
-          resource_sum ++;
-          fflag = 0;
-        }
-        else{
-          Serial.println(F("Failed to create CNT_CO2!"));
-          fflag = 0;
-        }
-
-        fflag = post("/TinyIoT/TinyFarm/Sensors", "CNT", "soil", "");         //soil(cnt) 생성
-        if (fflag == 1){
-          Serial.println(F("Successfully created CNT_soil!"));
-          resource_sum ++;
-          fflag = 0;
-        }
-        else{
-          Serial.println(F("Failed to create CNT_soil!"));
-          fflag = 0;
-        }
-
-      }
-      else{
-         Serial.println(F("Failed to create CNT_Sensors!"));
-      }
-
-      int state_CNT2 = post("/TinyIoT/TinyFarm", "CNT", "Actuators", "");
-      if(state_CNT2 == 1){
-        Serial.println(F("Successfully created CNT_Actuators!"));
-        resource_sum ++;
-
-        fflag = post("/TinyIoT/TinyFarm/Actuators", "CNT", "Door", "");       //Door(cnt) 생성 
-        if (fflag == 1){
-          Serial.println(F("Successfully created CNT_Door!"));
-          resource_sum ++;
-          fflag = 0;
-        }
-        else{
-          Serial.println(F("Failed to create CNT_Door!"));
-          fflag = 0;
-        }
-
-        fflag = post("/TinyIoT/TinyFarm/Actuators", "CNT", "Fan", "");       //Fan(cnt) 생성 
-        if (fflag == 1){
-          Serial.println(F("Successfully created CNT_Fan!"));
-          resource_sum ++;
-          fflag = 0;
-        }
-        else{
-          Serial.println(F("Failed to create CNT_Fan!"));
-          fflag = 0;
-        }
-
-        fflag = post("/TinyIoT/TinyFarm/Actuators", "CNT", "LED", "");          //LED(cnt) 생성
-        if (fflag == 1){
-          Serial.println(F("Successfully created CNT_LED!"));
-          resource_sum ++;
-          fflag = 0;
-        }
-        else{
-          Serial.println(F("Failed to create CNT_LED!"));
-          fflag = 0;
-        }
-
-        fflag = post("/TinyIoT/TinyFarm/Actuators", "CNT", "Water", "");
-        if (fflag == 1){
-          Serial.println(F("Successfully created CNT_Water!"));
-          resource_sum ++;
-          fflag = 0;
-        }
-        else{
-          Serial.println(F("Failed to create CNT_Water!"));
-          fflag = 0;
-        }
-
-      }
-      else{
-         Serial.println(F("Failed to create CNT_Actuators!"));
-      }
-
+void PostHum(void *pvParameters){
+    for(;;){
+      Serial.print("tsk1"); 
+      String H = String(Humidity);
+      post("/TinyIoT/TinyFarm/Sensors/Humidity", "CIN", "", H);     
+      vTaskDelay(pdMS_TO_TICKS(10000));
     } 
-    else if(state == 0){
-      Serial.println(F("Invalid Header or URI"));
-    } 
-    else {
-      Serial.println(F("Wifi not connected!"));
-    }
-
-  } 
-  else{
-    Serial.println(F("Wifi not connected!"));
-  }
-  
-  Serial.println(F("Setup completed!"));
-}
-
-
-
-
-DHT dht(DHTPIN, DHTTYPE);
-Servo servo; 
-LiquidCrystal_I2C lcd(0x27, 16, 2);
-
-
-// 액정 화면 출력 함수
-// 스마트팜 농장의 LCD 화면에 현재 센서 값이 출력되게함
-void printLCD(int col, int row , char *str) {
-    for(int i=0 ; i < strlen(str) ; i++){
-      lcd.setCursor(col+i , row);
-      lcd.print(str[i]);
-    }
-  }
-
-
-// 와이파이 환경 연결함수
-void printWifiStatus(){
-#if 1 // #if DEBUG   
-  // print the SSID of the network you're attached to
-  Serial.print("SSID: ");
-  Serial.println(WiFi.SSID());
-#endif
-
-  // print your WiFi shield's IP address
-  IPAddress ip = WiFi.localIP();
-  delay(10);
-#if 1 // #if DEBUG
-  Serial.print("IP Address: ");
-  Serial.println(ip);
-#endif
-  char ipno2[26] ;
-  sprintf(ipno2, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
-    printLCD(0, 1, ipno2);
-
-  // print the received signal strength
-  long rssi = WiFi.RSSI();
 
 }
 
+void PostTemp(void *pvParameters){
+    for(;;) {
+      Serial.print("tsk2");      
+      String T = String(Temperature);
+      post("/TinyIoT/TinyFarm/Sensors/Temperature", "CIN", "", T);     
+      vTaskDelay(pdMS_TO_TICKS(10000));
+    } 
 
-// 초기 1회 setup 함수
-// 시리얼 포트로 연결 시 최초 1회만 실행됨됨
-void setup() {
+}
 
-  pinMode(LIGHTPIN, OUTPUT);
-  pinMode(FAN_PIN, OUTPUT);
-  pinMode(WATER_PUMP_PIN, OUTPUT);
-  pinMode(RBG_R,OUTPUT);
-  pinMode(RBG_G,OUTPUT);
-  pinMode(RBG_B,OUTPUT);
-  digitalWrite(FAN_PIN, LOW);
-  Serial.begin(9600);
-  Serial1.begin(9600);
-  Serial2.begin(9600); 
-  dht.begin();
-  int flag = 0;
+void PostCO2(void *pvParameters){
+    for(;;) {
+      Serial.print("tsk3");      
+      String C = String(CO2);
+      post("/TinyIoT/TinyFarm/Sensors/CO2", "CIN", "", C);     
+      vTaskDelay(pdMS_TO_TICKS(10000));
+    } 
 
-  while (!Serial) {
-    ; // wait for serial port to connect. Needed for native USB port only
+}
+
+void PostSoil(void *pvParameters){ 
+    for(;;) {
+      Serial.print("tsk4");      
+      String S = String(Soil);
+      post("/TinyIoT/TinyFarm/Sensors/Soil", "CIN", "", S);     
+      vTaskDelay(pdMS_TO_TICKS(10000));
+    } 
+
+}
+/*
+void GetDoor(void *pvParameters) {
+    for(;;){        
+      String cmd1 = getCommandFromTinyIoT("/TinyIoT/TinyFarm/Actuators/Door/la"); 
+      Serial.print("tsk5 :");      
+      Serial.println(cmd1);
+      Mega2560.print("Door :");
+      Mega2560.println(cmd1);
+      vTaskDelay(pdMS_TO_TICKS(10000));       
+    }
+}
+
+void GetFan(void *pvParameters){ // LED 밝기 명령을 제어하는 함수
+    for(;;){      
+      String cmd2 = getCommandFromTinyIoT("/TinyIoT/TinyFarm/Actuators/Fan/la");     
+      Serial.print("tsk6");      
+      Serial.println(cmd2);       
+      Mega2560.print("Fan :");
+      Mega2560.println(cmd2);
+      vTaskDelay(pdMS_TO_TICKS(10000));    
+    }
+}
+
+void GetLED(void *pvParameters) {
+    for(;;){   
+      String cmd3 = getCommandFromTinyIoT("/TinyIoT/TinyFarm/Actuators/LED/la");
+      Serial.print("tsk7");         
+      Serial.println(cmd3);      
+      Mega2560.print("LED :");
+      Mega2560.print(cmd3);
+      vTaskDelay(pdMS_TO_TICKS(10000));          
+    }
+}
+
+void GetWater(void *pvParameters) {
+    for(;;) {     
+      String cmd4 = getCommandFromTinyIoT("/TinyIoT/TinyFarm/Actuators/Water/la");
+      Serial.print("tsk8");       
+      Serial.println(cmd4);      
+      Mega2560.print("Water :");
+      Mega2560.println(cmd4);
+      vTaskDelay(pdMS_TO_TICKS(10000));         
+    }
+}
+*/
+void setup() {                  //wifi 연결
+  Serial.begin(115200);
+  Mega2560.begin(9600);
+
+  WiFi.begin(ssid, password);   // 공유기에 연결
+  Serial.print("Connecting");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
   }
 
-  lcd.init();
-  lcd.backlight();
-  printLCD(0, 0, "Smartfarm Project");
-  printLCD(0, 1, "NETWORKING...");  
+  Serial.println("\nWiFi connected!");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
 
-#if USE_NETWORK
-  // initialize serial for ESP module
-  Serial2.begin(9600);
-  // initialize ESP module
-  WiFi.init(&Serial2);
+  //task 등록
+  xTaskCreatePinnedToCore(PostHum,"Task1", 12288, NULL, 1, &Task1, 0);
+  xTaskCreatePinnedToCore(PostTemp,"Task2", 12288, NULL, 1, &Task2, 0);
+  xTaskCreatePinnedToCore(PostCO2,"Task3", 12288, NULL, 1, &Task3, 0);
+  xTaskCreatePinnedToCore(PostSoil,"Task4", 12288, NULL, 1, &Task4, 0);      
 
-  // check for the presence of the shield
-  if (WiFi.status() == WL_NO_SHIELD) {
-    #if DEBUG
-    Serial.println("WiFi shield not present");
-  #endif
-    // don't continue
-    while (true);
-  }
+  //xTaskCreatePinnedToCore(GetDoor,"Task5", 12288, NULL, 1 ,&Task5, 1);      
+  //xTaskCreatePinnedToCore(GetFan,"Task6", 12288, NULL, 1 ,&Task6, 1); 
+  //xTaskCreatePinnedToCore(GetLED,"Task7", 12288, NULL, 1 ,&Task7, 1); 
+  //xTaskCreatePinnedToCore(GetWater,"Task8", 12288, NULL, 1 ,&Task8, 1);       
 
-  // attempt to connect to WiFi network
-  while ( status != WL_CONNECTED) {
-    #if DEBUG
-    Serial.print("Attempting to connect to WPA SSID: ");
-    Serial.println(ssid);
-  #endif
-    // Connect to WPA/WPA2 network
-    status = WiFi.begin(ssid, pass);
-  }
-  #if DEBUG
-  Serial.println("You're connected to the network");
-  #endif
-  printWifiStatus(); // display IP address on LCD
-  delay(2000);
-  
-  server_f.begin(); 
-#endif
-  
-  #if DEBUG
-  Serial.println("START");
-  #endif
-
-  setDevice();
-  post("/TinyIoT/TinyFarm/Actuators/Door", "CIN", "", "OFF");
-  post("/TinyIoT/TinyFarm/Actuators/Fan", "CIN", "", "OFF");
-  post("/TinyIoT/TinyFarm/Actuators/LED", "CIN", "", "0");
-  post("/TinyIoT/TinyFarm/Actuators/Water", "CNT", "", "OFF");
-
-  if(resource_sum == RESOURCE_CREATED_SUM) {
-    Serial.println("SmartFarm Succesfully Registered");  
-  }
-  else{
-    Serial.println("Failed to register SmartFarm");
-  }
 }
 
 void loop() {
-  int tem;
-  int hum;
-  int co;
+  if (Mega2560.available()) {
+    String input = Mega2560.readStringUntil('\n'); 
+    input.trim();
 
-    
-  float h = dht.readHumidity();        // 보통 readHumidity()
-  float t = dht.readTemperature();     // ℃
-  tem = (int)t;
-  hum = (int)h;
-  
-  String sH = String(h);
-  post("/TinyIoT/TinyFarm/Sensors/Humidity", "CIN", "", sH);
+    int sep = input.indexOf(':');
+    if (sep > 0) {
+      String key = input.substring(0, sep);
+      key.trim();
+      String valStr = input.substring(sep + 1);
+      valStr.trim();
+      int value = valStr.toInt();
 
-  String sT = String(t);
-  post("/TinyIoT/TinyFarm/Sensors/Temperature", "CIN", "", sT);
-    
-  int waterValue = analogRead(1);
-  waterValue = (10230 - waterValue * 10) / 100;
-  char wat_buffer[16] = {0};
-  itoa(waterValue, wat_buffer, 10);
-  post("/TinyIoT/TinyFarm/Sensors/Soil", "CIN", "", wat_buffer);
-
-  float EMF  = analogRead(EMF_pin);
-  delay(1);
-  EMF = EMF / (ADCResol - 1) * ADCvolt / 6 * 1000;
-
-  float THER = analogRead(THER_pin);
-  delay(1);
-  THER = 1 / (C1 + C2 * log((Resist_0 * THER)/(ADCResol - THER)) + C3 * pow(log((Resist_0 * THER)/(ADCResol - THER)), 3)) - 273.15;
-
-  int co2_ppm = RX9.cal_co2(EMF, THER) / 10;
-  co = co2_ppm;
-  char co2_buffer[16] = {0};
-  itoa(co2_ppm, co2_buffer, 10);
-  post("/TinyIoT/TinyFarm/Sensors/CO2", "CIN", "", co2_buffer);
-
-  
-
-  String cmd1 = getCommandFromTinyIoT("/TinyIoT/TinyFarm/Actuators/Door/la"); 
-
-    if (cmd1.length() > 0) {
-
-      const char* nData = cmd1.c_str();
-
-      if (strcmp(nData, "ON") == 0) {
-          angle = 10;
-          servo.attach(SERVOPIN);
-          servo.write(angle);
-          delay(500);
-          servo.detach();
-          Serial.println("[창문 제어] 열림 (10도)");
-      }
-      else if (strcmp(nData, "OFF") == 0) {
-          angle = 80;
-          servo.attach(SERVOPIN);
-          servo.write(angle);
-          delay(500);
-          servo.detach();
-          Serial.println("[창문 제어] 닫힘 (80도)");
-      }
-
-    }
-
-    
-    String cmd2 = getCommandFromTinyIoT("/TinyIoT/TinyFarm/Actuators/Fan/la"); // 환풍기 명령을 처리하는 함수
-    Serial.println(cmd2);
-    if (cmd2.length() > 0){
-      digitalWrite(FAN_PIN, HIGH);
-      const char* nData = cmd2.c_str();
-
-      if(memcmp(nData, "ON", 2) == 0) {
-
-        digitalWrite(FAN_PIN, HIGH);
-        Serial.print("[팬 제어] FAN=");
-        Serial.println((nData[0] == 'O' && nData[1] == 'N') ? 1 : 0);
-      }
-      else if(memcmp(nData, "OFF", 3) == 0) {
-
-        digitalWrite(FAN_PIN, LOW);
-        Serial.print("[팬 제어] FAN=");
-        Serial.println((nData[0] == 'O' && nData[1] == 'N') ? 1 : 0);
+      if (key.equals("Hum")) {
+        Humidity = value;
+      } else if (key.equals("Temp")) {
+        Temperature = value;
+      } else if (key.equals("CO2")) {
+        CO2 = value;
+      } else if (key.equals("Soil")) {
+        Soil = value;
       }
     }
 
+    // 확인용 출력  
+    Serial.print("Hum=");
+    Serial.print(Humidity);
+    Serial.print(" Temp=");
+    Serial.print(Temperature);
+    Serial.print(" CO2=");
+    Serial.print(CO2);
+    Serial.print(" Soil=");
+    Serial.println(Soil);
+  }
 
-    String cmd3 = getCommandFromTinyIoT("/TinyIoT/TinyFarm/Actuators/LED/la"); // LED 밝기 명령을 제어하는 함수
-
-    if (cmd3.length() > 0){ 
-
-      const char* nData = cmd3.c_str();
-      int light = atoi(nData);
-      
-      lightoutput = light;
-      analogWrite(LIGHTPIN, 25 * light);
-      analogWrite(RBG_R, 25 * light);
-      analogWrite(RBG_G, 25 * light);
-      analogWrite(RBG_B, 25 * light);
-      Serial.print("[조명 제어] 밝기=");
-      Serial.println(light);
-      
-    }
-
-
-     String cmd4 = getCommandFromTinyIoT("/TinyIoT/TinyFarm/Actuators/Water/la"); // 자동급수 명령을 처리하는 함수
-     if (cmd4.length() > 0){ 
-
-       const char* nData = cmd4.c_str();
-
-       if(memcmp(nData, "ON", 2) == 0) {
-         digitalWrite(WATER_PUMP_PIN, (nData[0] == 'O' && nData[1] == 'N') ? HIGH : LOW);
-         Serial.print("[펌프 제어] WATER=");
-         Serial.println((nData[0] == 'O' && nData[1] == 'N') ? 1 : 0);
-       }
-
-       if(memcmp(nData, "OFF", 3) == 0) {
-         digitalWrite(WATER_PUMP_PIN, (nData[0] == 'O' && nData[1] == 'N') ? HIGH : LOW);
-         Serial.print("[펌프 제어] WATER=");
-         Serial.println((nData[0] == 'O' && nData[1] == 'N') ? 1 : 0);
-       }
-
-     }
-
-      //센서값 LCD 출력
-
-
-      lcd.clear();
-        memset(sData, 0x00, 64);
-        sprintf(sData, "temp %02dC humi %02d%%", tem,
-        hum);
-        printLCD(0, 0, sData);
-        memset(sData, 0x00, 64);
-        sprintf(sData, "co2 %-04d soil %-04d", co, waterValue);
-        printLCD(0, 1, sData);
-
-      sprintf(sData, "{ \"temp\":%02d,\"Humidity\":%02d,\"co2\":%-04d,\"water\":%-04d }", tem, hum, co, waterValue);
-    
-      Serial1.println(sData);
-  
-  
-    delay(1); // 또는 yield();
-
-    }
+}
