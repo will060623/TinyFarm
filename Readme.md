@@ -77,7 +77,7 @@ int port = 3000;
 
 2. In Arduino IDE:
 
-<img src="https://github.com/will060623/TinyFarm/blob/main/images/%EC%8A%A4%ED%81%AC%EB%A6%B0%EC%83%B7%202025-10-30%20175502.png?raw=true"/>
+<img src="https://github.com/will060623/TinyFarm/blob/main/images/BoardSelect.png?raw=true"/>
 
    - Tools → Board → select your board (Arduino UNO/MEGA / ESP32 DevKit)
 
